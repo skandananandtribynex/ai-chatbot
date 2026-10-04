@@ -1,0 +1,97 @@
+from __future__ import annotations
+
+import os
+
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
+
+from app import BASE_DIR
+
+app = FastAPI(title="AI Chatbot", version="1.0.0")
+
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "app" / "static")), name="static")
+templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=5000)
+    history: list[dict[str, str]] = Field(default_factory=list)
+
+
+def demo_reply(message: str) -> str:
+    text = message.strip().lower()
+
+    if not text:
+        return "Please enter a message so I can help you."
+
+    if text.startswith(("hello", "hi", "hey")):
+        return "Hello! I’m your AI chatbot. Ask me about Python, projects, coding, or ideas."
+
+    if "python" in text:
+        return "Python is excellent for AI, automation, web apps, data science, and scripting. I can help you build one of those."
+
+    if "project" in text or "build" in text:
+        return "A good approach is to start simple, define the goal, build a prototype, then improve it with testing and iteration."
+
+    if "weather" in text:
+        return "I cannot access live weather data, but I can help you build a weather app or connect to an API."
+
+    if "name" in text:
+        return "I’m your AI chatbot, built with Python and FastAPI."
+
+    return "I’m in demo mode right now, but I can still help brainstorm ideas, explain code, or suggest a project structure."
+
+
+async def generate_reply(message: str, history: list[dict[str, str]]) -> str:
+    api_key = os.getenv("OPENAI_API_KEY")
+
+    if not api_key:
+        return demo_reply(message)
+
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=api_key)
+
+        conversation: list[dict[str, str]] = [
+            {"role": "system", "content": "You are a helpful AI assistant. Keep answers concise but useful."}
+        ]
+
+        for item in history:
+            role = item.get("role", "user")
+            content = item.get("content", "")
+            if role in {"user", "assistant"} and content:
+                conversation.append({"role": role, "content": content})
+
+        conversation.append({"role": "user", "content": message})
+
+        response = client.chat.completions.create(
+            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            messages=conversation,
+            temperature=0.7,
+            max_tokens=500,
+        )
+
+        reply = response.choices[0].message.content
+        return reply.strip() if reply else demo_reply(message)
+    except Exception:
+        return demo_reply(message)
+
+
+@app.get("/", response_class=HTMLResponse)
+async def home(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse("index.html", {"request": request})
+
+
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.post("/api/chat")
+async def chat(request: ChatRequest) -> dict[str, str]:
+    reply = await generate_reply(request.message, request.history)
+    return {"reply": reply}
